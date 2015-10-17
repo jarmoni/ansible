@@ -19,7 +19,7 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
-from six import iteritems, string_types
+from ansible.compat.six import iteritems, string_types
 
 from ansible.errors import AnsibleParserError
 from ansible.plugins import module_loader
@@ -148,13 +148,12 @@ class ModuleArgsParser:
         else:
             (action, args) = self._normalize_new_style_args(thing)
 
-        # this can occasionally happen, simplify
-        if args and 'args' in args:
-            tmp_args = args['args']
-            del args['args']
-            if isinstance(tmp_args, string_types):
-                tmp_args = parse_kv(tmp_args)
-            args.update(tmp_args)
+            # this can occasionally happen, simplify
+            if args and 'args' in args:
+                tmp_args = args.pop('args')
+                if isinstance(tmp_args, string_types):
+                    tmp_args = parse_kv(tmp_args)
+                args.update(tmp_args)
 
         # finally, update the args we're going to return with the ones
         # which were normalized above
@@ -277,7 +276,14 @@ class ModuleArgsParser:
 
         # if we didn't see any module in the task at all, it's not a task really
         if action is None:
-            raise AnsibleParserError("no action detected in task", obj=self._task_ds)
+            if 'ping' not in module_loader:
+                raise AnsibleParserError("The requested action was not found in configured module paths. "
+                        "Additionally, core modules are missing. If this is a checkout, "
+                        "run 'git submodule update --init --recursive' to correct this problem.",
+                        obj=self._task_ds)
+
+            else:
+                raise AnsibleParserError("no action detected in task", obj=self._task_ds)
         elif args.get('_raw_params', '') != '' and action not in RAW_PARAM_MODULES:
             templar = Templar(loader=None)
             raw_params = args.pop('_raw_params')

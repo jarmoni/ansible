@@ -34,7 +34,6 @@ from ansible import constants as C
 from ansible.errors import AnsibleError, AnsibleOptionsError
 from ansible.utils.unicode import to_bytes
 from ansible.utils.display import Display
-from ansible.utils.path import is_executable
 
 class SortedOptParser(optparse.OptionParser):
     '''Optparser which sorts the options by opt before outputting --help'''
@@ -121,7 +120,7 @@ class CLI(object):
             if ask_vault_pass and confirm_vault:
                 vault_pass2 = getpass.getpass(prompt="Confirm Vault password: ")
                 if vault_pass != vault_pass2:
-                    raise errors.AnsibleError("Passwords do not match")
+                    raise AnsibleError("Passwords do not match")
 
             if ask_new_vault_pass:
                 new_vault_pass = getpass.getpass(prompt="New Vault password: ")
@@ -129,7 +128,7 @@ class CLI(object):
             if ask_new_vault_pass and confirm_new:
                 new_vault_pass2 = getpass.getpass(prompt="Confirm New Vault password: ")
                 if new_vault_pass != new_vault_pass2:
-                    raise errors.AnsibleError("Passwords do not match")
+                    raise AnsibleError("Passwords do not match")
         except EOFError:
             pass
 
@@ -220,8 +219,8 @@ class CLI(object):
         setattr(parser.values, option.dest, os.path.expanduser(value))
 
     @staticmethod
-    def base_parser(usage="", output_opts=False, runas_opts=False, meta_opts=False, runtask_opts=False, vault_opts=False,
-        async_opts=False, connect_opts=False, subset_opts=False, check_opts=False, diff_opts=False, epilog=None, fork_opts=False):
+    def base_parser(usage="", output_opts=False, runas_opts=False, meta_opts=False, runtask_opts=False, vault_opts=False, module_opts=False,
+        async_opts=False, connect_opts=False, subset_opts=False, check_opts=False, inventory_opts=False, epilog=None, fork_opts=False):
         ''' create an options parser for most ansible scripts '''
 
         #FIXME: implemente epilog parsing
@@ -232,23 +231,26 @@ class CLI(object):
         parser.add_option('-v','--verbose', dest='verbosity', default=0, action="count",
             help="verbose mode (-vvv for more, -vvvv to enable connection debugging)")
 
-        if runtask_opts:
+        if inventory_opts:
             parser.add_option('-i', '--inventory-file', dest='inventory',
                 help="specify inventory host file (default=%s)" % C.DEFAULT_HOST_LIST,
                 default=C.DEFAULT_HOST_LIST, action="callback", callback=CLI.expand_tilde, type=str)
             parser.add_option('--list-hosts', dest='listhosts', action='store_true',
                 help='outputs a list of matching hosts; does not execute anything else')
-            parser.add_option('-M', '--module-path', dest='module_path',
-                help="specify path(s) to module library (default=%s)" % C.DEFAULT_MODULE_PATH, default=None,
+            parser.add_option('-l', '--limit', default=C.DEFAULT_SUBSET, dest='subset',
+                help='further limit selected hosts to an additional pattern')
+
+        if module_opts:
+            parser.add_option('-M', '--module-path', dest='module_path', default=None,
+                help="specify path(s) to module library (default=%s)" % C.DEFAULT_MODULE_PATH,
                 action="callback", callback=CLI.expand_tilde, type=str)
+        if runtask_opts:
             parser.add_option('-e', '--extra-vars', dest="extra_vars", action="append",
                 help="set additional variables as key=value or YAML/JSON", default=[])
 
         if fork_opts:
             parser.add_option('-f','--forks', dest='forks', default=C.DEFAULT_FORKS, type='int',
                 help="specify number of parallel processes to use (default=%s)" % C.DEFAULT_FORKS)
-            parser.add_option('-l', '--limit', default=C.DEFAULT_SUBSET, dest='subset',
-                help='further limit selected hosts to an additional pattern')
 
         if vault_opts:
             parser.add_option('--ask-vault-pass', default=False, dest='ask_vault_pass', action='store_true',
@@ -256,6 +258,12 @@ class CLI(object):
             parser.add_option('--vault-password-file', default=C.DEFAULT_VAULT_PASSWORD_FILE,
                 dest='vault_password_file', help="vault password file", action="callback",
                 callback=CLI.expand_tilde, type=str)
+            parser.add_option('--new-vault-password-file',
+                dest='new_vault_password_file', help="new vault password file for rekey", action="callback",
+                callback=CLI.expand_tilde, type=str)
+            parser.add_option('--output', default=None, dest='output_file',
+                help='output file name for encrypt or decrypt; use - for stdout')
+
 
         if subset_opts:
             parser.add_option('-t', '--tags', dest='tags', default='all',
@@ -296,7 +304,7 @@ class CLI(object):
 
 
         if connect_opts:
-            parser.add_option('-k', '--ask-pass', default=False, dest='ask_pass', action='store_true',
+            parser.add_option('-k', '--ask-pass', default=C.DEFAULT_ASK_PASS, dest='ask_pass', action='store_true',
                 help='ask for connection password')
             parser.add_option('--private-key','--key-file', default=C.DEFAULT_PRIVATE_KEY_FILE, dest='private_key_file',
                 help='use this file to authenticate the connection')
@@ -306,10 +314,17 @@ class CLI(object):
                 help="connection type to use (default=%s)" % C.DEFAULT_TRANSPORT)
             parser.add_option('-T', '--timeout', default=C.DEFAULT_TIMEOUT, type='int', dest='timeout',
                 help="override the connection timeout in seconds (default=%s)" % C.DEFAULT_TIMEOUT)
+            parser.add_option('--ssh-common-args', default='', dest='ssh_common_args',
+                help="specify common arguments to pass to sftp/scp/ssh (e.g. ProxyCommand)")
+            parser.add_option('--sftp-extra-args', default='', dest='sftp_extra_args',
+                help="specify extra arguments to pass to sftp only (e.g. -f, -l)")
+            parser.add_option('--scp-extra-args', default='', dest='scp_extra_args',
+                help="specify extra arguments to pass to scp only (e.g. -l)")
+            parser.add_option('--ssh-extra-args', default='', dest='ssh_extra_args',
+                help="specify extra arguments to pass to ssh only (e.g. -R)")
 
         if async_opts:
-            parser.add_option('-P', '--poll', default=C.DEFAULT_POLL_INTERVAL, type='int',
-                dest='poll_interval',
+            parser.add_option('-P', '--poll', default=C.DEFAULT_POLL_INTERVAL, type='int', dest='poll_interval',
                 help="set the poll interval if using -B (default=%s)" % C.DEFAULT_POLL_INTERVAL)
             parser.add_option('-B', '--background', dest='seconds', type='int', default=0,
                 help='run asynchronously, failing after X seconds (default=N/A)')
@@ -319,11 +334,8 @@ class CLI(object):
                 help="don't make any changes; instead, try to predict some of the changes that may occur")
             parser.add_option('--syntax-check', dest='syntax', action='store_true',
                 help="perform a syntax check on the playbook, but do not execute it")
-
-        if diff_opts:
             parser.add_option("-D", "--diff", default=False, dest='diff', action='store_true',
-                help="when changing (small) files and templates, show the differences in those files; works great with --check"
-            )
+                help="when changing (small) files and templates, show the differences in those files; works great with --check")
 
         if meta_opts:
             parser.add_option('--force-handlers', default=C.DEFAULT_FORCE_HANDLERS, dest='force_handlers', action='store_true',
@@ -349,7 +361,7 @@ class CLI(object):
         ''' return full ansible version info '''
         if gitinfo:
             # expensive call, user with care
-            ansible_version_string = version('')
+            ansible_version_string = CLI.version('')
         else:
             ansible_version_string = __version__
         ansible_version = ansible_version_string.split()[0]
@@ -432,21 +444,20 @@ class CLI(object):
         return result
 
 
-    @staticmethod
-    def pager(text):
+    def pager(self, text):
         ''' find reasonable way to display text '''
         # this is a much simpler form of what is in pydoc.py
         if not sys.stdout.isatty():
-            print(text)
+            self.display.display(text)
         elif 'PAGER' in os.environ:
             if sys.platform == 'win32':
-                print(text)
+                self.display.display(text)
             else:
-                CLI.pager_pipe(text, os.environ['PAGER'])
+                self.pager_pipe(text, os.environ['PAGER'])
         elif subprocess.call('(less --version) 2> /dev/null', shell = True) == 0:
-            CLI.pager_pipe(text, 'less')
+            self.pager_pipe(text, 'less')
         else:
-            print(text)
+            self.display.display(text)
 
     @staticmethod
     def pager_pipe(text, cmd):
@@ -455,25 +466,25 @@ class CLI(object):
             os.environ['LESS'] = CLI.LESS_OPTS
         try:
             cmd = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=sys.stdout)
-            cmd.communicate(input=text)
+            cmd.communicate(input=text.encode(sys.stdout.encoding))
         except IOError:
             pass
         except KeyboardInterrupt:
             pass
 
     @classmethod
-    def tty_ify(self, text):
+    def tty_ify(cls, text):
 
-        t = self._ITALIC.sub("`" + r"\1" + "'", text)    # I(word) => `word'
-        t = self._BOLD.sub("*" + r"\1" + "*", t)         # B(word) => *word*
-        t = self._MODULE.sub("[" + r"\1" + "]", t)       # M(word) => [word]
-        t = self._URL.sub(r"\1", t)                      # U(word) => word
-        t = self._CONST.sub("`" + r"\1" + "'", t)        # C(word) => `word'
+        t = cls._ITALIC.sub("`" + r"\1" + "'", text)    # I(word) => `word'
+        t = cls._BOLD.sub("*" + r"\1" + "*", t)         # B(word) => *word*
+        t = cls._MODULE.sub("[" + r"\1" + "]", t)       # M(word) => [word]
+        t = cls._URL.sub(r"\1", t)                      # U(word) => word
+        t = cls._CONST.sub("`" + r"\1" + "'", t)        # C(word) => `word'
 
         return t
 
     @staticmethod
-    def read_vault_password_file(vault_password_file):
+    def read_vault_password_file(vault_password_file, loader):
         """
         Read a vault password from a file or if executable, execute the script and
         retrieve password from STDOUT
@@ -483,7 +494,7 @@ class CLI(object):
         if not os.path.exists(this_path):
             raise AnsibleError("The vault password file %s was not found" % this_path)
 
-        if is_executable(this_path):
+        if loader.is_executable(this_path):
             try:
                 # STDERR not captured to make it easier for users to prompt for input in their scripts
                 p = subprocess.Popen(this_path, stdout=subprocess.PIPE)
@@ -500,4 +511,17 @@ class CLI(object):
                 raise AnsibleError("Could not read vault password file %s: %s" % (this_path, e))
 
         return vault_pass
+
+    def get_opt(self, k, defval=""):
+        """
+        Returns an option from an Optparse values instance.
+        """
+        try:
+            data = getattr(self.options, k)
+        except:
+            return defval
+        if k == "roles_path":
+            if os.pathsep in data:
+                data = data.split(os.pathsep)[0]
+        return data
 

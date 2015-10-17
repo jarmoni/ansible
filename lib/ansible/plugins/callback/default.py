@@ -19,6 +19,7 @@
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
+from ansible import constants as C
 from ansible.plugins.callback import CallbackBase
 
 class CallbackModule(CallbackBase):
@@ -49,7 +50,10 @@ class CallbackModule(CallbackBase):
         if result._task.loop and 'results' in result._result:
             self._process_items(result)
         else:
-            self._display.display("fatal: [%s]: FAILED! => %s" % (result._host.get_name(), self._dump_results(result._result)), color='red')
+            if result._task.delegate_to:
+                self._display.display("fatal: [%s -> %s]: FAILED! => %s" % (result._host.get_name(), result._task.delegate_to, self._dump_results(result._result)), color='red')
+            else:
+                self._display.display("fatal: [%s]: FAILED! => %s" % (result._host.get_name(), self._dump_results(result._result)), color='red')
 
         if result._task.ignore_errors:
             self._display.display("...ignoring", color='cyan')
@@ -60,29 +64,55 @@ class CallbackModule(CallbackBase):
             msg = 'included: %s for %s' % (result._task.args.get('_raw_params'), result._host.name)
             color = 'cyan'
         elif result._result.get('changed', False):
-            msg = "changed: [%s]" % result._host.get_name()
+            if result._task.delegate_to is not None or result._task._local_action:
+                if result._task._local_action:
+                    target = 'localhost'
+                else:
+                    target = result._task.delegate_to
+                msg = "changed: [%s -> %s]" % (result._host.get_name(), target)
+            else:
+                msg = "changed: [%s]" % result._host.get_name()
             color = 'yellow'
         else:
-            msg = "ok: [%s]" % result._host.get_name()
+            if result._task.delegate_to is not None or result._task._local_action:
+                if result._task._local_action:
+                    target = 'localhost'
+                else:
+                    target = result._task.delegate_to
+                msg = "ok: [%s -> %s]" % (result._host.get_name(), target)
+            else:
+                msg = "ok: [%s]" % result._host.get_name()
             color = 'green'
 
         if result._task.loop and 'results' in result._result:
             self._process_items(result)
+        else:
 
-        if (self._display.verbosity > 0 or '_ansible_verbose_always' in result._result) and not '_ansible_verbose_override' in result._result and result._task.action != 'include':
-            msg += " => %s" % self._dump_results(result._result)
-        self._display.display(msg, color=color)
+            if (self._display.verbosity > 0 or '_ansible_verbose_always' in result._result) and not '_ansible_verbose_override' in result._result and result._task.action != 'include':
+                msg += " => %s" % (self._dump_results(result._result),)
+            self._display.display(msg, color=color)
 
         self._handle_warnings(result._result)
 
     def v2_runner_on_skipped(self, result):
-        msg = "skipping: [%s]" % result._host.get_name()
-        if (self._display.verbosity > 0 or '_ansible_verbose_always' in result._result) and not '_ansible_verbose_override' in result._result:
-            msg += " => %s" % self._dump_results(result._result)
-        self._display.display(msg, color='cyan')
+        if C.DISPLAY_SKIPPED_HOSTS:
+            if result._task.loop and 'results' in result._result:
+                self._process_items(result)
+            else:
+                msg = "skipping: [%s]" % result._host.get_name()
+                if (self._display.verbosity > 0 or '_ansible_verbose_always' in result._result) and not '_ansible_verbose_override' in result._result:
+                    msg += " => %s" % self._dump_results(result._result)
+                self._display.display(msg, color='cyan')
 
     def v2_runner_on_unreachable(self, result):
-        self._display.display("fatal: [%s]: UNREACHABLE! => %s" % (result._host.get_name(), self._dump_results(result._result)), color='red')
+        if result._task.delegate_to or result._task._local_action:
+            if result._task._local_action:
+                target = 'localhost'
+            else:
+                target = result._task.delegate_to
+            self._display.display("fatal: [%s -> %s]: UNREACHABLE! => %s" % (result._host.get_name(), target, self._dump_results(result._result)), color='red')
+        else:
+            self._display.display("fatal: [%s]: UNREACHABLE! => %s" % (result._host.get_name(), self._dump_results(result._result)), color='red')
 
     def v2_playbook_on_no_hosts_matched(self):
         self._display.display("skipping: no hosts matched", color='cyan')
@@ -92,6 +122,10 @@ class CallbackModule(CallbackBase):
 
     def v2_playbook_on_task_start(self, task, is_conditional):
         self._display.banner("TASK [%s]" % task.get_name().strip())
+        if self._display.verbosity > 3:
+            path = task.get_path()
+            if path:
+                self._display.display("task path: %s" % path, color='dark gray')
 
     def v2_playbook_on_cleanup_task_start(self, task):
         self._display.banner("CLEANUP TASK [%s]" % task.get_name().strip())
@@ -109,7 +143,7 @@ class CallbackModule(CallbackBase):
         self._display.banner(msg)
 
     def v2_on_file_diff(self, result):
-        if 'diff' in result._result and result._result['diff'] != {}:
+        if 'diff' in result._result and result._result['diff']:
             self._display.display(self._get_diff(result._result['diff']))
 
     def v2_playbook_item_on_ok(self, result):
@@ -124,7 +158,7 @@ class CallbackModule(CallbackBase):
             msg = "ok: [%s]" % result._host.get_name()
             color = 'green'
 
-        msg += " => (item=%s)" % result._result['item']
+        msg += " => (item=%s)" % (result._result['item'],)
 
         if (self._display.verbosity > 0 or '_ansible_verbose_always' in result._result) and not '_ansible_verbose_override' in result._result and result._task.action != 'include':
             msg += " => %s" % self._dump_results(result._result)

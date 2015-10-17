@@ -181,7 +181,7 @@ It might happen like so::
 Given the mysql hosts and privs subkey lists, you can also iterate over a list in a nested subkey::
 
     - name: Setup MySQL users
-      mysql_user: name={{ item.0.user }} password={{ item.0.mysql.password }} host={{ item.1 }} priv={{ item.0.mysql.privs | join('/') }}
+      mysql_user: name={{ item.0.name }} password={{ item.0.mysql.password }} host={{ item.1 }} priv={{ item.0.mysql.privs | join('/') }}
       with_subelements:
         - users
         - mysql.hosts
@@ -346,6 +346,54 @@ It's uncommonly used::
     - name: indexed loop demo
       debug: msg="at array position {{ item.0 }} there is a value {{ item.1 }}"
       with_indexed_items: "{{some_list}}"
+
+.. _using_ini_with_a_loop:
+
+Using ini file with a loop
+``````````````````````````
+.. versionadded: 2.0
+
+The ini plugin can use regexp to retrieve a set of keys. As a consequence, we can loop over this set. Here is the ini file we'll use::
+
+    [section1]
+    value1=section1/value1
+    value2=section1/value2
+
+    [section2]
+    value1=section2/value1
+    value2=section2/value2
+
+Here is an example of using ``with_ini``::
+
+    - debug: msg="{{item}}"
+      with_ini: value[1-2] section=section1 file=lookup.ini re=true
+
+And here is the returned value::
+
+    {
+          "changed": false, 
+          "msg": "All items completed", 
+          "results": [
+              {
+                  "invocation": {
+                      "module_args": "msg=\"section1/value1\"", 
+                      "module_name": "debug"
+                  }, 
+                  "item": "section1/value1", 
+                  "msg": "section1/value1", 
+                  "verbose_always": true
+              }, 
+              {
+                  "invocation": {
+                      "module_args": "msg=\"section1/value2\"", 
+                      "module_name": "debug"
+                  }, 
+                  "item": "section1/value2", 
+                  "msg": "section1/value2", 
+                  "verbose_always": true
+              }
+          ]
+      }
 
 .. _flattening_a_list:
 

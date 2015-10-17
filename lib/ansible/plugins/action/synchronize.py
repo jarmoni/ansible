@@ -23,7 +23,7 @@ import os.path
 from ansible.plugins.action import ActionBase
 from ansible.plugins import connection_loader
 from ansible.utils.boolean import boolean
-from ansible import constants
+from ansible import constants as C
 
 
 class ActionModule(ActionBase):
@@ -31,7 +31,12 @@ class ActionModule(ActionBase):
     def _get_absolute_path(self, path):
         if self._task._role is not None:
             original_path = path
-            path = self._loader.path_dwim_relative(self._task._role._role_path, 'files', path)
+
+            if self._task._role is not None:
+                path = self._loader.path_dwim_relative(self._task._role._role_path, 'files', path)
+            else:
+                path = self._loader.path_dwim_relative(self._loader.get_basedir(), 'files', path)
+
             if original_path and original_path[-1] == '/' and path[-1] != '/':
                 # make sure the dwim'd path ends in a trailing "/"
                 # if the original path did
@@ -39,13 +44,25 @@ class ActionModule(ActionBase):
 
         return path
 
+    def _host_is_ipv6_address(self, host):
+        return ':' in host
+
+    def _format_rsync_rsh_target(self, host, path, user):
+        ''' formats rsync rsh target, escaping ipv6 addresses if needed '''
+
+        user_prefix = ''
+        if user:
+            user_prefix = '%s@' % (user, )
+
+        if self._host_is_ipv6_address(host):
+            return '[%s%s]:%s' % (user_prefix, host, path)
+        else:
+            return '%s%s:%s' % (user_prefix, host, path)
+
     def _process_origin(self, host, path, user):
 
-        if host not in ('127.0.0.1', 'localhost', '::1'):
-            if user:
-                return '%s@%s:%s' % (user, host, path)
-            else:
-                return '%s:%s' % (host, path)
+        if host not in C.LOCALHOST:
+            return self._format_rsync_rsh_target(host, path, user)
 
         if ':' not in path and not path.startswith('/'):
             path = self._get_absolute_path(path=path)
@@ -53,11 +70,8 @@ class ActionModule(ActionBase):
 
     def _process_remote(self, host, path, user):
         transport = self._play_context.connection
-        if host not in ('127.0.0.1', 'localhost', '::1') or transport != "local":
-            if user:
-                return '%s@%s:%s' % (user, host, path)
-            else:
-                return '%s:%s' % (host, path)
+        if host not in C.LOCALHOST or transport != "local":
+            return self._format_rsync_rsh_target(host, path, user)
 
         if ':' not in path and not path.startswith('/'):
             path = self._get_absolute_path(path=path)
@@ -72,12 +86,15 @@ class ActionModule(ActionBase):
         # connection to the remote host
         if 'ansible_syslog_facility' in task_vars:
             del task_vars['ansible_syslog_facility']
-        for key in task_vars:
+        for key in task_vars.keys():
             if key.startswith("ansible_") and key.endswith("_interpreter"):
                 del task_vars[key]
 
         # Add the definitions from localhost
-        localhost = task_vars['hostvars']['127.0.0.1']
+        for host in C.LOCALHOST:
+            if host in task_vars['hostvars']:
+                localhost = task_vars['hostvars'][host]
+                break
         if 'ansible_syslog_facility' in localhost:
             task_vars['ansible_syslog_facility'] = localhost['ansible_syslog_facility']
         for key in localhost:
@@ -93,7 +110,7 @@ class ActionModule(ActionBase):
             remote_transport = True
 
         try:
-            delegate_to = self._play_context.delegate_to
+            delegate_to = self._task.delegate_to
         except (AttributeError, KeyError):
             delegate_to = None
 
@@ -107,14 +124,16 @@ class ActionModule(ActionBase):
         # ansible's delegate_to mechanism to determine which host rsync is
         # running on so localhost could be a non-controller machine if
         # delegate_to is used)
-        src_host = '127.0.0.1'
-        dest_host = task_vars.get('ansible_ssh_host') or task_vars.get('inventory_hostname')
+        src_host  = '127.0.0.1'
+        inventory_hostname = task_vars.get('inventory_hostname')
+        dest_host_inventory_vars = task_vars['hostvars'].get(inventory_hostname)
+        dest_host = dest_host_inventory_vars.get('ansible_ssh_host', inventory_hostname)
 
-        dest_is_local = dest_host in ('127.0.0.1', 'localhost', '::1')
+        dest_is_local = dest_host in C.LOCALHOST
 
         # CHECK FOR NON-DEFAULT SSH PORT
         if self._task.args.get('dest_port', None) is None:
-            inv_port = task_vars.get('ansible_ssh_port', None) or constants.DEFAULT_REMOTE_PORT
+            inv_port = task_vars.get('ansible_ssh_port', None) or C.DEFAULT_REMOTE_PORT
             if inv_port is not None:
                 self._task.args['dest_port'] = inv_port
 
@@ -175,10 +194,11 @@ class ActionModule(ActionBase):
             user = None
             if boolean(self._task.args.get('set_remote_user', 'yes')):
                 if use_delegate:
-                    if 'hostvars' in task_vars and delegate_to in task_vars['hostvars']:
-                        user = task_vars['hostvars'][delegate_to].get('ansible_ssh_user', None)
+                    user = task_vars.get('ansible_delegated_vars', dict()).get('ansible_ssh_user', None)
+                    if not user:
+                        user = C.DEFAULT_REMOTE_USER
 
-                if not use_delegate or not user:
+                else:
                     user = task_vars.get('ansible_ssh_user') or self._play_context.remote_user
 
             # use the mode to define src and dest's url
@@ -213,7 +233,7 @@ class ActionModule(ActionBase):
             self._task.args['rsync_path'] = '"%s"' % rsync_path
 
         if use_ssh_args:
-            self._task.args['ssh_args'] = constants.ANSIBLE_SSH_ARGS
+            self._task.args['ssh_args'] = C.ANSIBLE_SSH_ARGS
 
         # run the module and store the result
         result = self._execute_module('synchronize', task_vars=task_vars)

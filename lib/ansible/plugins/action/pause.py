@@ -24,6 +24,7 @@ import termios
 import time
 import tty
 
+from os import isatty
 from ansible.errors import *
 from ansible.plugins.action import ActionBase
 
@@ -90,6 +91,7 @@ class ActionModule(ActionBase):
 
         start = time.time()
         result['start'] = str(datetime.datetime.now())
+        result['user_input'] = ''
 
         try:
             if seconds is not None:
@@ -97,41 +99,47 @@ class ActionModule(ActionBase):
                 signal.signal(signal.SIGALRM, timeout_handler)
                 signal.alarm(seconds)
                 # show the prompt
-                print("Pausing for %d seconds" % seconds)
-                print("(ctrl+C then 'C' = continue early, ctrl+C then 'A' = abort)\r"),
+                self._display.display("Pausing for %d seconds" % seconds)
+                self._display.display("(ctrl+C then 'C' = continue early, ctrl+C then 'A' = abort)\r"),
             else:
-                print(prompt)
+                self._display.display(prompt)
 
             # save the attributes on the existing (duped) stdin so
             # that we can restore them later after we set raw mode
             fd = self._connection._new_stdin.fileno()
-            old_settings = termios.tcgetattr(fd)
-            tty.setraw(fd)
+            if isatty(fd):
+                old_settings = termios.tcgetattr(fd)
+                tty.setraw(fd)
 
-            # flush the buffer to make sure no previous key presses
-            # are read in below 
-            termios.tcflush(self._connection._new_stdin, termios.TCIFLUSH)
+                # flush the buffer to make sure no previous key presses
+                # are read in below
+                termios.tcflush(self._connection._new_stdin, termios.TCIFLUSH)
 
-            # read key presses and act accordingly
             while True:
-                key_pressed = self._connection._new_stdin.read(1)
-                if pause_type in ('minutes', 'seconds'):
-                    if key_pressed == '\x03':
-                        key_pressed = self._connection._new_stdin.read(1)
-                        if key_pressed == 'a':
-                            raise KeyboardInterrupt
-                        elif key_pressed == 'c':
-                            break
-                else:
+                try:
+                    key_pressed = self._connection._new_stdin.read(1)
                     if key_pressed == '\x03':
                         raise KeyboardInterrupt
-                    elif key_pressed == '\r':
+
+                    if not seconds:
+                        if not isatty(fd):
+                            self._display.warning("Not waiting from prompt as stdin is not interactive")
+                            break
+                        # read key presses and act accordingly
+                        if key_pressed == '\r':
+                            break
+                        else:
+                            result['user_input'] += key_pressed
+
+                except KeyboardInterrupt:
+                    if seconds is not None:
+                        signal.alarm(0)
+                    self._display.display("Press 'C' to continue the play or 'A' to abort \r"),
+                    if self._c_or_a():
                         break
-        except KeyboardInterrupt:
-            # cancel the previously set alarm signal
-            if seconds is not None:
-                signal.alarm(0)
-            raise AnsibleError('user requested abort!')
+                    else:
+                        raise AnsibleError('user requested abort!')
+
         except AnsibleTimeoutExceeded:
             # this is the exception we expect when the alarm signal
             # fires, so we simply ignore it to move into the cleanup
@@ -139,7 +147,8 @@ class ActionModule(ActionBase):
         finally:
             # cleanup and save some information
             # restore the old settings for the duped stdin fd
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            if isatty(fd):
+                termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
             duration = time.time() - start
             result['stop'] = str(datetime.datetime.now())
@@ -149,8 +158,14 @@ class ActionModule(ActionBase):
                 duration = round(duration / 60.0, 2)
             else:
                 duration = round(duration, 2)
-
             result['stdout'] = "Paused for %s %s" % (duration, duration_unit)
 
         return result
 
+    def _c_or_a(self):
+        while True:
+            key_pressed = self._connection._new_stdin.read(1)
+            if key_pressed.lower() == 'a':
+                return False
+            elif key_pressed.lower() == 'c':
+                return True

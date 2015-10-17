@@ -53,43 +53,48 @@ def tasktime():
     time_current = time.strftime('%A %d %B %Y  %H:%M:%S %z')
     time_elapsed = secondsToStr(time.time() - tn)
     time_total_elapsed = secondsToStr(time.time() - t0)
-    display(filled('%s (%s)%s%s' % (time_current, time_elapsed, ' ' * 7, time_total_elapsed)))
     tn = time.time()
+    return filled('%s (%s)%s%s' % (time_current, time_elapsed, ' ' * 7, time_total_elapsed))
 
 
 class CallbackModule(CallbackBase):
     """
-    This callback module provides per-task timing, ongoing playbook elapsed time 
+    This callback module provides per-task timing, ongoing playbook elapsed time
     and ordered list of top 20 longest running tasks at end.
     """
     CALLBACK_VERSION = 2.0
     CALLBACK_TYPE = 'aggregate'
     CALLBACK_NAME = 'profile_tasks'
- 
+
     def __init__(self, display):
         self.stats = {}
         self.current = None
 
         super(CallbackModule, self).__init__(display)
 
-
-    def playbook_on_task_start(self, name, is_conditional):
+    def _record_task(self, name):
         """
         Logs the start of each task
         """
-        tasktime()
+        self._display.display(tasktime())
         timestamp(self)
 
         # Record the start time of the current task
         self.current = name
         self.stats[self.current] = time.time()
 
+    def playbook_on_task_start(self, name, is_conditional):
+        self._record_task(name)
+
+    def v2_playbook_on_handler_task_start(self, task):
+        self._record_task('HANDLER: ' + task.name)
+
     def playbook_on_setup(self):
-        tasktime()
+        self._display.display(tasktime())
 
     def playbook_on_stats(self, stats):
-        tasktime()
-        display(filled("", fchar="="))
+        self._display.display(tasktime())
+        self._display.display(filled("", fchar="="))
 
         timestamp(self)
 
@@ -105,7 +110,7 @@ class CallbackModule(CallbackBase):
 
         # Print the timings
         for name, elapsed in results:
-            self.display.display(
+            self._display.display(
                 "{0:-<70}{1:->9}".format(
                     '{0} '.format(name),
                     ' {0:.02f}s'.format(elapsed),
